@@ -1,0 +1,50 @@
+name: ServiceNow JWT Integration
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  call-servicenow-api:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Generate JWT
+      id: generate_jwt
+      run: |
+        echo "Generating JWT..."
+        header='{"alg":"RS256","typ":"JWT"}'
+        payload='{
+          "iss": "'"${{ secrets.SERVICENOW_CLIENT_ID }}"'",
+          "sub": "'"${{ secrets.SERVICENOW_CLIENT_ID }}"'",
+          "aud": "https://dev216812.service-now.com/oauth_token.do",
+          "iat": '$(date +%s)',
+          "exp": '$(($(date +%s) + 3600))'
+        }'
+        header_base64=$(echo -n $header | openssl base64 -e | tr -d '=' | tr '/+' '_-' | tr -d '\n')
+        payload_base64=$(echo -n $payload | openssl base64 -e | tr -d '=' | tr '/+' '_-' | tr -d '\n')
+        signature=$(echo -n "$header_base64.$payload_base64" | openssl dgst -sha256 -sign <(echo -n "${{ secrets.SERVICENOW_PRIVATE_KEY }}") | openssl base64 -e | tr -d '=' | tr '/+' '_-' | tr -d '\n')
+        jwt="$header_base64.$payload_base64.$signature"
+        echo "::set-output name=jwt::$jwt"
+
+    - name: Exchange JWT for Access Token
+      id: get_token
+      run: |
+        response=$(curl -X POST "https://dev216812.service-now.com/oauth_token.do" \
+          -d "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer" \
+          -d "assertion=${{ steps.generate_jwt.outputs.jwt }}" \
+          -d "client_id=${{ secrets.SERVICENOW_CLIENT_ID }}" \
+          -H "Content-Type: application/x-www-form-urlencoded")
+        echo $response
+        access_token=$(echo $response | jq -r .access_token)
+        echo "::set-output name=access_token::$access_token"
+
+    - name: Make API Request to ServiceNow
+      run: |
+        curl -X GET "https://dev216812.service-now.com/api/sn_chg_rest/v1/change/c83c5e5347c12200e0ef563dbb9a7190" \
+          -H "Authorization: Bearer ${{ steps.get_token.outputs.access_token }}" \
+          -H "Content-Type: application/json"
